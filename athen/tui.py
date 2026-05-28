@@ -8,7 +8,7 @@ from textual.reactive import reactive
 from textual.binding import Binding
 
 from athen.agent import AthenAgent
-from athen.config import WIKI_DIR, SKILLS_DIR, MODELS_2026
+from athen.config import WIKI_DIR, SKILLS_DIR, MODELS_2026, get_api_key
 
 ASCII_LOGO = """
   █████╗ ████████╗██╗  ██╗███████╗███╗   ██╗
@@ -145,7 +145,7 @@ Screen {
     background: #1f242c;
     border: solid #ffffff;
     height: auto;
-    max-height: 8;
+    max-height: 10;
     color: #ffffff;
     padding: 0 1;
     display: none;
@@ -237,7 +237,7 @@ class AthenTUI(App):
                     with ListView(id="autocomplete-box"):
                         yield ListItem(Label("/goal [task] - Launch reasoning code goal"), id="ac-goal", classes="autocomplete-item")
                         yield ListItem(Label("/plan [task] - Plan-only mode"), id="ac-plan", classes="autocomplete-item")
-                        yield ListItem(Label("/model - Select model provider menu"), id="ac-model", classes="autocomplete-item")
+                        yield ListItem(Label("/model - Click to select model"), id="ac-model", classes="autocomplete-item")
                     with Vertical(id="input-area"):
                         yield Input(placeholder="Type message or '/' for commands...", id="user-input")
                 
@@ -305,7 +305,6 @@ class AthenTUI(App):
         self.update_subagents_view()
 
     def update_wiki_graph(self) -> None:
-        # Build neural network layout in ASCII
         wiki_data = self.agent.wiki.get_links()
         nodes = wiki_data.get("nodes", [])
         links = wiki_data.get("links", [])
@@ -314,7 +313,6 @@ class AthenTUI(App):
         if not nodes:
             graph_str += "Graph is empty. Start a conversation to populate memory."
         else:
-            # Format nodes and links using box-drawing characters
             adj = {n: [] for n in nodes}
             for link in links:
                 adj[link["source"]].append(link["target"])
@@ -333,7 +331,6 @@ class AthenTUI(App):
                                     graph_str += f"   │      └───► ● {subchild}\n"
                                     visited.add(subchild)
             
-            # Print standalone nodes
             for n in nodes:
                 if n not in visited:
                     graph_str += f"● {n}\n"
@@ -379,21 +376,69 @@ class AthenTUI(App):
             switcher.current = "view-settings"
             
         # Autocomplete handle
-        elif item_id.startswith("ac-"):
-            user_input = self.query_one("#user-input", Input)
-            if item_id == "ac-goal":
-                user_input.value = "/goal "
-            elif item_id == "ac-plan":
-                user_input.value = "/plan "
-            elif item_id == "ac-model":
-                user_input.value = "/model "
-            user_input.focus()
+        elif item_id == "ac-goal":
+            self.query_one("#user-input", Input).value = "/goal "
+            self.query_one("#user-input", Input).focus()
             self.query_one("#autocomplete-box", ListView).styles.display = "none"
+        elif item_id == "ac-plan":
+            self.query_one("#user-input", Input).value = "/plan "
+            self.query_one("#user-input", Input).focus()
+            self.query_one("#autocomplete-box", ListView).styles.display = "none"
+        elif item_id == "ac-model":
+            # Replace ListView options with models!
+            self.show_model_selection_dropdown()
+        elif item_id.startswith("select-model:"):
+            model_name = item_id.split(":", 1)[1]
+            self.switch_to_model(model_name)
+            self.query_one("#user-input", Input).value = ""
+            self.query_one("#autocomplete-box", ListView).styles.display = "none"
+
+    def show_model_selection_dropdown(self) -> None:
+        box = self.query_one("#autocomplete-box", ListView)
+        box.clear()
+        
+        # Add a back button
+        box.append(ListItem(Label("<- Back to Commands"), id="ac-back", classes="autocomplete-item"))
+        
+        # Add all available models
+        for provider, info in MODELS_2026.items():
+            for model_id in info["models"].keys():
+                box.append(ListItem(Label(f"Model: {model_id}"), id=f"select-model:{model_id}", classes="autocomplete-item"))
+
+    def switch_to_model(self, model_name: str) -> None:
+        # Auto-detect provider based on chosen model
+        provider = "openrouter"
+        model_to_use = model_name
+        
+        if "claude" in model_name:
+            provider = "anthropic"
+        elif "gemini" in model_name:
+            provider = "google"
+        elif "deepseek" in model_name:
+            provider = "deepseek"
+            if model_name.startswith("deepseek/"):
+                model_to_use = model_name.split("/", 1)[1]
+        elif "gpt" in model_name:
+            provider = "openai"
+            if model_name.startswith("openai/"):
+                model_to_use = model_name.split("/", 1)[1]
+
+        # Apply settings
+        self.agent.llm_client.provider = provider
+        self.agent.llm_client.model = model_to_use
+        self.agent.llm_client.api_key = get_api_key(provider)
+        
+        self.chat_log.write(Text.from_markup(f"\n[bold #ffffff][MODEL CHANGED]:[/bold #ffffff] Switched to provider [bold]{provider}[/bold], model [bold]{model_to_use}[/bold]"))
+        self.update_status(f"Provider: {provider} | Model: {model_to_use}")
 
     def on_input_changed(self, event: Input.Changed) -> None:
         val = event.value
         box = self.query_one("#autocomplete-box", ListView)
         if val == "/":
+            box.clear()
+            box.append(ListItem(Label("/goal [task] - Launch reasoning code goal"), id="ac-goal", classes="autocomplete-item"))
+            box.append(ListItem(Label("/plan [task] - Plan-only mode"), id="ac-plan", classes="autocomplete-item"))
+            box.append(ListItem(Label("/model - Click to select model"), id="ac-model", classes="autocomplete-item"))
             box.styles.display = "block"
         elif not val.startswith("/"):
             box.styles.display = "none"
@@ -407,7 +452,6 @@ class AthenTUI(App):
         self.query_one("#autocomplete-box", ListView).styles.display = "none"
         self.chat_log.write(Text.from_markup(f"\n[bold #ffffff]>>> User:[/bold #ffffff] {user_text}"))
 
-        # Check for commands
         is_goal = False
         is_plan = False
         
@@ -420,23 +464,22 @@ class AthenTUI(App):
             prompt = user_text[6:].strip()
             self.chat_log.write(Text.from_markup(f"\n[bold #ffffff][PLANNING MODE RUNNING]:[/bold #ffffff] {prompt}"))
         elif user_text.startswith("/model"):
-            # Model selection
-            self.chat_log.write(Text.from_markup("\n[bold #ffffff][AVAILABLE MODELS]:[/bold #ffffff]"))
-            for provider, info in MODELS_2026.items():
-                for m in info["models"].keys():
-                    self.chat_log.write(Text.from_markup(f"  - {m} (click to set in settings or type /model <name>)"))
+            parts = user_text.split(" ", 1)
+            if len(parts) > 1:
+                self.switch_to_model(parts[1].strip())
+            else:
+                self.show_model_selection_dropdown()
+                self.query_one("#autocomplete-box", ListView).styles.display = "block"
             return
         else:
             prompt = user_text
 
-        # Set temporary plan-only flag
         self.is_plan_only = is_plan
         self.run_worker(self.execute_agent_loop(prompt, is_goal or is_plan))
 
     async def execute_agent_loop(self, prompt: str, is_goal: bool) -> None:
         try:
             self.update_status("Thinking...")
-            # If in planning mode, prefix prompt
             if self.is_plan_only:
                 prompt = f"PLAN ONLY: Create a complete implementation plan for this goal. Do not run any code write operations: {prompt}"
             response = await self.agent.step(prompt, is_goal=is_goal)
@@ -445,11 +488,10 @@ class AthenTUI(App):
         except Exception as e:
             self.chat_log.write(Text.from_markup(f"\n[bold #ffffff][SYSTEM ERROR]:[/bold #ffffff] {str(e)}"))
         finally:
-            self.update_status("Ready.")
+            self.update_status(f"Provider: {self.agent.llm_client.provider} | Model: {self.agent.llm_client.model}")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "save-settings-btn":
-            # Save inputs to local .env
             env_path = Path.cwd() / ".env"
             openrouter = self.query_one("#set-openrouter", Input).value
             anthropic = self.query_one("#set-anthropic", Input).value
@@ -466,14 +508,14 @@ class AthenTUI(App):
             ]
             env_path.write_text("".join(lines))
             
-            # Reload agent client keys
             os.environ["OPENROUTER_API_KEY"] = openrouter
             os.environ["ANTHROPIC_API_KEY"] = anthropic
             os.environ["OPENAI_API_KEY"] = openai
             os.environ["GEMINI_API_KEY"] = gemini
             os.environ["DEEPSEEK_API_KEY"] = deepseek
             
-            self.agent.llm_client.api_key = openrouter if self.agent.llm_client.provider == "openrouter" else anthropic
+            # Reload key for current active provider
+            self.agent.llm_client.api_key = get_api_key(self.agent.llm_client.provider)
             
             self.update_status("API Keys Saved successfully.")
             self.chat_log.write(Text.from_markup("\n[bold #ffffff]System status:[/bold #ffffff] API keys saved to .env and loaded successfully."))
@@ -487,4 +529,4 @@ class AthenTUI(App):
         res = await self.agent.wiki.lint()
         self.chat_log.write(Text.from_markup(f"\n[bold #ffffff]System memory linter:[/bold #ffffff]\n{res}"))
         self.update_all_views()
-        self.update_status("Ready.")
+        self.update_status(f"Provider: {self.agent.llm_client.provider} | Model: {self.agent.llm_client.model}")
