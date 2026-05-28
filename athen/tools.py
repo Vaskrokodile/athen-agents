@@ -1,6 +1,7 @@
 import os
 import json
 import asyncio
+import shutil
 import subprocess
 from typing import List, Dict, Any, Callable
 from pathlib import Path
@@ -18,7 +19,6 @@ class MCPClient:
 
     async def start(self) -> bool:
         try:
-            # Add current path env
             merged_env = os.environ.copy()
             merged_env.update(self.env)
             
@@ -31,22 +31,18 @@ class MCPClient:
                 env=merged_env
             )
             
-            # Step 1: Initialize
             init_res = await self._send_request("initialize", {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {},
                 "clientInfo": {"name": "athen-agents", "version": "1.0.0"}
             })
             
-            # Step 2: Send initialized notification
             await self._send_notification("notifications/initialized")
             
-            # Step 3: Fetch tools list
             tools_res = await self._send_request("tools/list", {})
             self.tools = tools_res.get("tools", [])
             return True
         except Exception as e:
-            # Quietly fail if server cannot start
             return False
 
     async def _send_request(self, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -65,7 +61,6 @@ class MCPClient:
         self.process.stdin.write(raw_msg.encode('utf-8'))
         await self.process.stdin.drain()
         
-        # Read response line
         line = await self.process.stdout.readline()
         if not line:
             return {}
@@ -94,7 +89,6 @@ class MCPClient:
             "arguments": arguments
         })
         
-        # Format the results
         content = res.get("content", [])
         text_parts = []
         for block in content:
@@ -126,7 +120,6 @@ class ToolManager:
 
     async def execute_tool(self, name: str, arguments: Dict[str, Any]) -> str:
         """Execute the tool by name with arguments."""
-        # Check MCP clients
         for client_name, client in self.mcp_clients.items():
             for t in client.tools:
                 if t["name"] == name:
@@ -160,7 +153,7 @@ class ToolManager:
 
         # 2. write_file
         self.tools["write_file"] = {
-            "description": "Write content to a file at path.",
+            "description": "Write content to a file at path (creates or overwrites).",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -172,7 +165,22 @@ class ToolManager:
             "handler": self._write_file
         }
 
-        # 3. list_dir
+        # 3. patch_file
+        self.tools["patch_file"] = {
+            "description": "Replace a specific substring block in a file with new content (for editing existing files).",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path to the file to edit"},
+                    "search_content": {"type": "string", "description": "The exact content string in the file to find"},
+                    "replacement_content": {"type": "string", "description": "The content to replace search_content with"}
+                },
+                "required": ["path", "search_content", "replacement_content"]
+            },
+            "handler": self._patch_file
+        }
+
+        # 4. list_dir
         self.tools["list_dir"] = {
             "description": "List contents of a directory.",
             "input_schema": {
@@ -184,9 +192,35 @@ class ToolManager:
             "handler": self._list_dir
         }
 
-        # 4. run_command
+        # 5. create_directory
+        self.tools["create_directory"] = {
+            "description": "Create a new folder or nested folders at path.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Folder path to create"}
+                },
+                "required": ["path"]
+            },
+            "handler": self._create_directory
+        }
+
+        # 6. delete_file_or_directory
+        self.tools["delete_file_or_directory"] = {
+            "description": "Delete a file or recursively delete a directory folder.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path of file or folder to delete"}
+                },
+                "required": ["path"]
+            },
+            "handler": self._delete_file_or_directory
+        }
+
+        # 7. run_command
         self.tools["run_command"] = {
-            "description": "Run a shell command on the host machine.",
+            "description": "Run a shell command on the host machine to build, test, install, or perform operations.",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -197,7 +231,7 @@ class ToolManager:
             "handler": self._run_command
         }
 
-        # 5. web_search
+        # 8. web_search
         self.tools["web_search"] = {
             "description": "Search the web for information using a query.",
             "input_schema": {
@@ -208,6 +242,19 @@ class ToolManager:
                 "required": ["query"]
             },
             "handler": self._web_search
+        }
+
+        # 9. fetch_webpage
+        self.tools["fetch_webpage"] = {
+            "description": "Go to a URL link and download its webpage text/HTML content.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "Web URL to fetch content from"}
+                },
+                "required": ["url"]
+            },
+            "handler": self._fetch_webpage
         }
 
     # --- Built-in Tool Handlers ---
@@ -226,6 +273,17 @@ class ToolManager:
         filepath.write_text(content, encoding="utf-8")
         return f"Successfully wrote to '{path}'"
 
+    def _patch_file(self, path: str, search_content: str, replacement_content: str) -> str:
+        filepath = Path(path).resolve()
+        if not filepath.exists():
+            return f"Error: File '{path}' does not exist."
+        original = filepath.read_text(encoding="utf-8", errors="replace")
+        if search_content not in original:
+            return f"Error: The target search content was not found exactly as specified in '{path}'."
+        updated = original.replace(search_content, replacement_content, 1)
+        filepath.write_text(updated, encoding="utf-8")
+        return f"Successfully patched '{path}'"
+
     def _list_dir(self, path: str = ".") -> str:
         dirpath = Path(path).resolve()
         if not dirpath.exists():
@@ -239,6 +297,22 @@ class ToolManager:
             items.append(f"{p.name}{suffix}")
         
         return "\n".join(items) if items else "(empty directory)"
+
+    def _create_directory(self, path: str) -> str:
+        dirpath = Path(path).resolve()
+        dirpath.mkdir(parents=True, exist_ok=True)
+        return f"Successfully created directory folder '{path}'"
+
+    def _delete_file_or_directory(self, path: str) -> str:
+        target = Path(path).resolve()
+        if not target.exists():
+            return f"Error: Path '{path}' does not exist."
+        if target.is_dir():
+            shutil.rmtree(target)
+            return f"Successfully deleted directory folder '{path}'"
+        else:
+            target.unlink()
+            return f"Successfully deleted file '{path}'"
 
     def _run_command(self, command: str) -> str:
         try:
@@ -270,6 +344,27 @@ class ToolManager:
             pass
         return f"Web search results for: '{query}'\n1. Search completed successfully. Mock results: Athen agent documentation and setup guides."
 
+    async def _fetch_webpage(self, url: str) -> str:
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                res = await client.get(url)
+                if res.status_code != 200:
+                    return f"Error: Failed to fetch page. HTTP Status Code {res.status_code}"
+                
+                # Basic text extract from HTML
+                html = res.text
+                # Remove script and style elements
+                import re
+                text = re.sub(r'<script.*?</script>', '', html, flags=re.DOTALL)
+                text = re.sub(r'<style.*?</style>', '', text, flags=re.DOTALL)
+                text = re.sub(r'<[^>]+>', ' ', text)
+                text = re.sub(r'\s+', ' ', text).strip()
+                
+                return text[:10000] # Return first 10k chars
+        except Exception as e:
+            return f"Error fetching webpage: {str(e)}"
+
     # --- MCP Support ---
 
     def load_mcp_servers(self, config_path: Path):
@@ -289,7 +384,6 @@ class ToolManager:
                 env = server_info.get("env", {})
                 
                 client = MCPClient(name, cmd, args, env)
-                # Run the client initialization asynchronously
                 asyncio.create_task(self._init_mcp_client(name, client))
         except Exception as e:
             pass
@@ -298,12 +392,11 @@ class ToolManager:
         started = await client.start()
         if started:
             self.mcp_clients[name] = client
-            # Add client's tools to our schema tools registry
             for tool in client.tools:
                 self.tools[tool["name"]] = {
                     "description": tool["description"],
                     "input_schema": tool["input_schema"],
-                    "handler": None # Handled dynamically in execute_tool
+                    "handler": None
                 }
 
 def httpx_escape(s: str) -> str:
