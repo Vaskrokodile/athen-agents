@@ -110,8 +110,8 @@ Screen {
 }
 
 #input-container {
-    height: 4;
-    padding: 1;
+    height: auto;
+    padding: 0 1;
     background: #0f141c;
 }
 
