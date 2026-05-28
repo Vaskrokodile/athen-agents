@@ -288,6 +288,21 @@ class AthenTUI(App):
         self.query_one("#set-deepseek", Input).value = os.getenv("DEEPSEEK_API_KEY") or ""
 
         self.update_all_views()
+        self.fallback_to_available_provider()
+
+    def fallback_to_available_provider(self) -> None:
+        """Auto-switch to a provider that has an API key if current is missing."""
+        active_key = self.agent.llm_client.api_key
+        if not active_key:
+            for prov in ["deepseek", "anthropic", "openai", "google", "openrouter"]:
+                if get_api_key(prov):
+                    default_model = MODELS_2026[prov]["default"]
+                    self.switch_to_model(default_model)
+                    self.chat_log.write(Text.from_markup(
+                        f"\n[bold #ffffff][SYSTEM]:[/bold #ffffff] Switched active provider to [bold]{prov}[/bold] "
+                        f"({default_model}) because its API key was found configured."
+                    ))
+                    break
 
     def update_status(self, status: str) -> None:
         self.status_message = status
@@ -519,6 +534,9 @@ class AthenTUI(App):
             
             self.update_status("API Keys Saved successfully.")
             self.chat_log.write(Text.from_markup("\n[bold #ffffff]System status:[/bold #ffffff] API keys saved to .env and loaded successfully."))
+            
+            # Run fallback scanner now that keys changed
+            self.fallback_to_available_provider()
 
     def action_clear_chat(self) -> None:
         self.chat_log.clear()
