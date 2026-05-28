@@ -102,7 +102,7 @@ Screen {
     text-style: bold;
     color: #ffffff;
     margin-bottom: 1;
-    border-bottom: thin #30363d;
+    border-bottom: solid #30363d;
     padding-bottom: 1;
 }
 
