@@ -373,55 +373,69 @@ class AthenTUI(App):
             area.write(f"- Subagent [bold #ffffff]{sub_name}[/bold #ffffff]: {sub_status}")
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
-        item_id = event.item.id
+        item = event.item
+        item_id = item.id
         switcher = self.query_one("#detail-switcher", ContentSwitcher)
         
-        if item_id == "chan-chat":
-            switcher.current = "view-chat"
-        elif item_id == "chan-wiki":
-            self.update_wiki_graph()
-            switcher.current = "view-wiki"
-        elif item_id == "chan-skills":
-            self.update_skills_view()
-            switcher.current = "view-skills"
-        elif item_id == "chan-subagents":
-            self.update_subagents_view()
-            switcher.current = "view-subagents"
-        elif item_id == "chan-settings":
-            switcher.current = "view-settings"
+        # Sidebar channel items
+        if item_id and item_id.startswith("chan-"):
+            if item_id == "chan-chat":
+                switcher.current = "view-chat"
+            elif item_id == "chan-wiki":
+                self.update_wiki_graph()
+                switcher.current = "view-wiki"
+            elif item_id == "chan-skills":
+                self.update_skills_view()
+                switcher.current = "view-skills"
+            elif item_id == "chan-subagents":
+                self.update_subagents_view()
+                switcher.current = "view-subagents"
+            elif item_id == "chan-settings":
+                switcher.current = "view-settings"
+            return
             
-        # Autocomplete handle
-        elif item_id == "ac-goal":
-            self.query_one("#user-input", Input).value = "/goal "
-            self.query_one("#user-input", Input).focus()
-            self.query_one("#autocomplete-box", ListView).styles.display = "none"
-        elif item_id == "ac-plan":
-            self.query_one("#user-input", Input).value = "/plan "
-            self.query_one("#user-input", Input).focus()
-            self.query_one("#autocomplete-box", ListView).styles.display = "none"
-        elif item_id == "ac-model":
-            # Replace ListView options with models!
-            self.show_model_selection_dropdown()
-        elif item_id.startswith("select-model:"):
-            model_name = item_id.split(":", 1)[1]
-            self.switch_to_model(model_name)
-            self.query_one("#user-input", Input).value = ""
-            self.query_one("#autocomplete-box", ListView).styles.display = "none"
+        # Autocomplete dropdown item clicked
+        parent_list = item.parent
+        if parent_list and parent_list.id == "autocomplete-box":
+            label_text = ""
+            for child in item.walk_children(Label):
+                label_text = str(child.renderable)
+                break
+                
+            if "Back to Commands" in label_text:
+                self.show_default_autocomplete()
+            elif "Model:" in label_text:
+                model_name = label_text.replace("Model:", "").strip()
+                self.switch_to_model(model_name)
+                self.query_one("#user-input", Input).value = ""
+                self.query_one("#autocomplete-box", ListView).styles.display = "none"
+            elif "/goal" in label_text:
+                self.query_one("#user-input", Input).value = "/goal "
+                self.query_one("#user-input", Input).focus()
+                self.query_one("#autocomplete-box", ListView).styles.display = "none"
+            elif "/plan" in label_text:
+                self.query_one("#user-input", Input).value = "/plan "
+                self.query_one("#user-input", Input).focus()
+                self.query_one("#autocomplete-box", ListView).styles.display = "none"
+            elif "/model" in label_text:
+                self.show_model_selection_dropdown()
+
+    def show_default_autocomplete(self) -> None:
+        box = self.query_one("#autocomplete-box", ListView)
+        box.clear()
+        box.append(ListItem(Label("/goal [task] - Launch reasoning code goal"), classes="autocomplete-item"))
+        box.append(ListItem(Label("/plan [task] - Plan-only mode"), classes="autocomplete-item"))
+        box.append(ListItem(Label("/model - Click to select model"), classes="autocomplete-item"))
 
     def show_model_selection_dropdown(self) -> None:
         box = self.query_one("#autocomplete-box", ListView)
         box.clear()
-        
-        # Add a back button
-        box.append(ListItem(Label("<- Back to Commands"), id="ac-back", classes="autocomplete-item"))
-        
-        # Add all available models
+        box.append(ListItem(Label("<- Back to Commands"), classes="autocomplete-item"))
         for provider, info in MODELS_2026.items():
             for model_id in info["models"].keys():
-                box.append(ListItem(Label(f"Model: {model_id}"), id=f"select-model:{model_id}", classes="autocomplete-item"))
+                box.append(ListItem(Label(f"Model: {model_id}"), classes="autocomplete-item"))
 
     def switch_to_model(self, model_name: str) -> None:
-        # Auto-detect provider based on chosen model
         provider = "openrouter"
         model_to_use = model_name
         
@@ -438,7 +452,6 @@ class AthenTUI(App):
             if model_name.startswith("openai/"):
                 model_to_use = model_name.split("/", 1)[1]
 
-        # Apply settings
         self.agent.llm_client.provider = provider
         self.agent.llm_client.model = model_to_use
         self.agent.llm_client.api_key = get_api_key(provider)
@@ -450,10 +463,7 @@ class AthenTUI(App):
         val = event.value
         box = self.query_one("#autocomplete-box", ListView)
         if val == "/":
-            box.clear()
-            box.append(ListItem(Label("/goal [task] - Launch reasoning code goal"), id="ac-goal", classes="autocomplete-item"))
-            box.append(ListItem(Label("/plan [task] - Plan-only mode"), id="ac-plan", classes="autocomplete-item"))
-            box.append(ListItem(Label("/model - Click to select model"), id="ac-model", classes="autocomplete-item"))
+            self.show_default_autocomplete()
             box.styles.display = "block"
         elif not val.startswith("/"):
             box.styles.display = "none"
