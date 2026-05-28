@@ -3,12 +3,12 @@ from pathlib import Path
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, Vertical
-from textual.widgets import Header, Footer, Input, RichLog, Static, Label, ListView, ListItem
+from textual.widgets import Header, Footer, Input, RichLog, Static, Label, ListView, ListItem, Button, ContentSwitcher
 from textual.reactive import reactive
 from textual.binding import Binding
 
 from athen.agent import AthenAgent
-from athen.config import WIKI_DIR, SKILLS_DIR
+from athen.config import WIKI_DIR, SKILLS_DIR, MODELS_2026
 
 ASCII_LOGO = """
   █████╗ ████████╗██╗  ██╗███████╗███╗   ██╗
@@ -60,7 +60,7 @@ Screen {
 }
 
 #sidebar {
-    width: 28%;
+    width: 25%;
     height: 100%;
     border-right: solid #30363d;
     background: #161b22;
@@ -86,10 +86,24 @@ Screen {
     color: #000000;
 }
 
-#chat-panel {
-    width: 72%;
+#detail-switcher {
+    width: 75%;
+    height: 100%;
+}
+
+/* Page views */
+.view-panel {
+    width: 100%;
     height: 100%;
     padding: 1;
+}
+
+.view-title {
+    text-style: bold;
+    color: #ffffff;
+    margin-bottom: 1;
+    border-bottom: thin #30363d;
+    padding-bottom: 1;
 }
 
 #chat-log {
@@ -98,6 +112,7 @@ Screen {
     border: solid #30363d;
     padding: 1;
     color: #ffffff;
+    margin-bottom: 1;
 }
 
 #status-bar {
@@ -109,10 +124,10 @@ Screen {
     padding-left: 2;
 }
 
-#input-container {
-    height: auto;
-    padding: 0 1;
+#input-area {
+    height: 4;
     background: #0f141c;
+    padding: 0;
 }
 
 #user-input {
@@ -123,6 +138,49 @@ Screen {
 
 #user-input:focus {
     border: double #ffffff;
+}
+
+/* Autocomplete popup */
+#autocomplete-box {
+    background: #1f242c;
+    border: solid #ffffff;
+    height: auto;
+    max-height: 8;
+    color: #ffffff;
+    padding: 0 1;
+    display: none;
+}
+
+.autocomplete-item {
+    padding: 0 1;
+    color: #e6edf3;
+}
+
+.autocomplete-item:hover {
+    background: #ffffff;
+    color: #000000;
+}
+
+/* Settings fields */
+.settings-input {
+    margin-bottom: 1;
+    border: solid #30363d;
+    background: #0d1117;
+    color: #ffffff;
+}
+
+#save-settings-btn {
+    background: #ffffff;
+    color: #000000;
+    margin-top: 1;
+}
+
+#graph-view-area {
+    background: #0d1117;
+    border: solid #30363d;
+    height: 1fr;
+    padding: 1;
+    overflow-y: scroll;
 }
 """
 
@@ -138,7 +196,8 @@ class AthenTUI(App):
 
     status_message = reactive("Ready.")
     subagent_list = reactive({})
-    active_channel = reactive("wiki")
+    active_view = reactive("chat")
+    is_plan_only = reactive(False)
 
     def __init__(self, provider: str, model: str = None):
         super().__init__()
@@ -160,24 +219,59 @@ class AthenTUI(App):
         with Horizontal(id="main-container"):
             # Left Sidebar (Channels selection list)
             with Vertical(id="sidebar"):
-                yield Label("[CHANNELS] (Memory)", id="sidebar-title")
+                yield Label("[CHANNELS]", id="sidebar-title")
                 with ListView(id="channel-list"):
-                    yield ListItem(Label("[Memory] LLM Wiki"), id="chan-wiki", classes="channel-item")
-                    yield ListItem(Label("[Skills] Self-Learned"), id="chan-skills", classes="channel-item")
-                    yield ListItem(Label("[Agents] Sub-Agents"), id="chan-subagents", classes="channel-item")
-                yield Static(id="sidebar-details-title", classes="channel-item")
-                yield Static(id="sidebar-details", classes="channel-item")
+                    yield ListItem(Label("[Chat] Conversation"), id="chan-chat", classes="channel-item")
+                    yield ListItem(Label("[Memory] LLM Wiki Graph"), id="chan-wiki", classes="channel-item")
+                    yield ListItem(Label("[Skills] Learned Skills"), id="chan-skills", classes="channel-item")
+                    yield ListItem(Label("[Agents] Sub-Agents Track"), id="chan-subagents", classes="channel-item")
+                    yield ListItem(Label("[Settings] API Keys"), id="chan-settings", classes="channel-item")
                 
-            # Right/Center Chat Panel
-            with Vertical(id="chat-panel"):
-                yield Label("[CHAT SESSION]", id="chat-title")
-                yield RichLog(id="chat-log", wrap=True, highlight=True, max_lines=1000)
+            # Right Panel switcher
+            with ContentSwitcher(id="detail-switcher", initial="view-chat"):
+                # 1. Chat View
+                with Vertical(id="view-chat", classes="view-panel"):
+                    yield Label("[CHAT SESSION]", classes="view-title")
+                    yield RichLog(id="chat-log", wrap=True, highlight=True, max_lines=1000)
+                    # Autocomplete Float Box
+                    with ListView(id="autocomplete-box"):
+                        yield ListItem(Label("/goal [task] - Launch reasoning code goal"), id="ac-goal", classes="autocomplete-item")
+                        yield ListItem(Label("/plan [task] - Plan-only mode"), id="ac-plan", classes="autocomplete-item")
+                        yield ListItem(Label("/model - Select model provider menu"), id="ac-model", classes="autocomplete-item")
+                    with Vertical(id="input-area"):
+                        yield Input(placeholder="Type message or '/' for commands...", id="user-input")
                 
+                # 2. LLM Wiki Graph View
+                with Vertical(id="view-wiki", classes="view-panel"):
+                    yield Label("[NEURAL MEMORY GRAPH]", classes="view-title")
+                    yield Static(id="graph-view-area")
+
+                # 3. Skills View
+                with Vertical(id="view-skills", classes="view-panel"):
+                    yield Label("[SYNTHESIZED SKILLS]", classes="view-title")
+                    yield RichLog(id="skills-view-area", wrap=True, highlight=True)
+
+                # 4. Sub-Agents View
+                with Vertical(id="view-subagents", classes="view-panel"):
+                    yield Label("[SUB-AGENTS RUNNING]", classes="view-title")
+                    yield RichLog(id="subagents-view-area", wrap=True, highlight=True)
+
+                # 5. Settings View
+                with Vertical(id="view-settings", classes="view-panel"):
+                    yield Label("[SETTINGS - API KEYS]", classes="view-title")
+                    yield Label("OpenRouter API Key:")
+                    yield Input(placeholder="OPENROUTER_API_KEY", id="set-openrouter", classes="settings-input")
+                    yield Label("Anthropic API Key:")
+                    yield Input(placeholder="ANTHROPIC_API_KEY", id="set-anthropic", classes="settings-input")
+                    yield Label("OpenAI API Key:")
+                    yield Input(placeholder="OPENAI_API_KEY", id="set-openai", classes="settings-input")
+                    yield Label("Gemini API Key:")
+                    yield Input(placeholder="GEMINI_API_KEY", id="set-gemini", classes="settings-input")
+                    yield Label("DeepSeek API Key:")
+                    yield Input(placeholder="DEEPSEEK_API_KEY", id="set-deepseek", classes="settings-input")
+                    yield Button("Save API Keys", id="save-settings-btn")
+
         yield Label("Status: Ready", id="status-bar")
-        
-        with Container(id="input-container"):
-            yield Input(placeholder="Type message or `/goal <task>` to solve complex tasks...", id="user-input")
-            
         yield Footer()
 
     def on_mount(self) -> None:
@@ -185,7 +279,15 @@ class AthenTUI(App):
         self.chat_log = self.query_one("#chat-log", RichLog)
         self.chat_log.write(Text.from_markup("Welcome to [bold #ffffff]Athen Agents[/bold #ffffff]. Powered by the latest 2026 reasoning models."))
         self.chat_log.write(Text.from_markup("Type a prompt or try: [bold #ffffff]/goal build a web app[/bold #ffffff] to launch long-horizon coding loop."))
-        self.update_sidebar_content()
+        
+        # Populate Settings values
+        self.query_one("#set-openrouter", Input).value = os.getenv("OPENROUTER_API_KEY") or ""
+        self.query_one("#set-anthropic", Input).value = os.getenv("ANTHROPIC_API_KEY") or ""
+        self.query_one("#set-openai", Input).value = os.getenv("OPENAI_API_KEY") or ""
+        self.query_one("#set-gemini", Input).value = os.getenv("GEMINI_API_KEY") or ""
+        self.query_one("#set-deepseek", Input).value = os.getenv("DEEPSEEK_API_KEY") or ""
+
+        self.update_all_views()
 
     def update_status(self, status: str) -> None:
         self.status_message = status
@@ -195,51 +297,106 @@ class AthenTUI(App):
         new_list = dict(self.subagent_list)
         new_list[name] = status
         self.subagent_list = new_list
-        if self.active_channel == "subagents":
-            self.update_sidebar_content()
+        self.update_subagents_view()
 
-    def update_sidebar_content(self) -> None:
-        title_el = self.query_one("#sidebar-details-title", Static)
-        details_el = self.query_one("#sidebar-details", Static)
+    def update_all_views(self) -> None:
+        self.update_wiki_graph()
+        self.update_skills_view()
+        self.update_subagents_view()
 
-        if self.active_channel == "wiki":
-            title_el.update("[MEMORIES]")
-            wiki_files = list(WIKI_DIR.glob("*.md"))
-            wiki_str = ""
-            if not wiki_files:
-                wiki_str = "No wiki files yet."
-            for file in wiki_files:
-                wiki_str += f"- {file.stem}\n"
-            details_el.update(wiki_str)
+    def update_wiki_graph(self) -> None:
+        # Build neural network layout in ASCII
+        wiki_data = self.agent.wiki.get_links()
+        nodes = wiki_data.get("nodes", [])
+        links = wiki_data.get("links", [])
+        
+        graph_str = "● NEURAL KNOWLEDGE GRAPH MAP\n===========================\n\n"
+        if not nodes:
+            graph_str += "Graph is empty. Start a conversation to populate memory."
+        else:
+            # Format nodes and links using box-drawing characters
+            adj = {n: [] for n in nodes}
+            for link in links:
+                adj[link["source"]].append(link["target"])
+                
+            visited = set()
+            for root in nodes:
+                if root not in visited:
+                    graph_str += f"● {root}\n"
+                    visited.add(root)
+                    for child in adj[root]:
+                        if child not in visited:
+                            graph_str += f"   ├───► ● {child}\n"
+                            visited.add(child)
+                            for subchild in adj.get(child, []):
+                                if subchild not in visited:
+                                    graph_str += f"   │      └───► ● {subchild}\n"
+                                    visited.add(subchild)
             
-        elif self.active_channel == "skills":
-            title_el.update("[SKILLS]")
-            skill_files = list(SKILLS_DIR.glob("*.md"))
-            skills_str = ""
-            if not skill_files:
-                skills_str = "No learned skills yet."
-            for file in skill_files:
-                skills_str += f"- {file.stem}\n"
-            details_el.update(skills_str)
-            
-        elif self.active_channel == "subagents":
-            title_el.update("[SUB-AGENTS]")
-            subagent_str = ""
-            if not self.subagent_list:
-                subagent_str = "No active sub-agents."
-            for sub_name, sub_status in self.subagent_list.items():
-                subagent_str += f"- {sub_name}: {sub_status}\n"
-            details_el.update(subagent_str)
+            # Print standalone nodes
+            for n in nodes:
+                if n not in visited:
+                    graph_str += f"● {n}\n"
+                    
+        self.query_one("#graph-view-area", Static).update(graph_str)
+
+    def update_skills_view(self) -> None:
+        area = self.query_one("#skills-view-area", RichLog)
+        area.clear()
+        skill_files = list(SKILLS_DIR.glob("*.md"))
+        if not skill_files:
+            area.write("No self-learned skills synthesized yet.")
+            return
+        for file in skill_files:
+            content = file.read_text(encoding="utf-8", errors="replace")
+            area.write(f"--- SKILL FILE: {file.name} ---\n{content}\n")
+
+    def update_subagents_view(self) -> None:
+        area = self.query_one("#subagents-view-area", RichLog)
+        area.clear()
+        if not self.subagent_list:
+            area.write("No active background sub-agents.")
+            return
+        for sub_name, sub_status in self.subagent_list.items():
+            area.write(f"- Subagent [bold #ffffff]{sub_name}[/bold #ffffff]: {sub_status}")
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         item_id = event.item.id
-        if item_id == "chan-wiki":
-            self.active_channel = "wiki"
+        switcher = self.query_one("#detail-switcher", ContentSwitcher)
+        
+        if item_id == "chan-chat":
+            switcher.current = "view-chat"
+        elif item_id == "chan-wiki":
+            self.update_wiki_graph()
+            switcher.current = "view-wiki"
         elif item_id == "chan-skills":
-            self.active_channel = "skills"
+            self.update_skills_view()
+            switcher.current = "view-skills"
         elif item_id == "chan-subagents":
-            self.active_channel = "subagents"
-        self.update_sidebar_content()
+            self.update_subagents_view()
+            switcher.current = "view-subagents"
+        elif item_id == "chan-settings":
+            switcher.current = "view-settings"
+            
+        # Autocomplete handle
+        elif item_id.startswith("ac-"):
+            user_input = self.query_one("#user-input", Input)
+            if item_id == "ac-goal":
+                user_input.value = "/goal "
+            elif item_id == "ac-plan":
+                user_input.value = "/plan "
+            elif item_id == "ac-model":
+                user_input.value = "/model "
+            user_input.focus()
+            self.query_one("#autocomplete-box", ListView).styles.display = "none"
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        val = event.value
+        box = self.query_one("#autocomplete-box", ListView)
+        if val == "/":
+            box.styles.display = "block"
+        elif not val.startswith("/"):
+            box.styles.display = "none"
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         user_text = event.value.strip()
@@ -247,28 +404,79 @@ class AthenTUI(App):
             return
             
         event.input.value = ""
+        self.query_one("#autocomplete-box", ListView).styles.display = "none"
         self.chat_log.write(Text.from_markup(f"\n[bold #ffffff]>>> User:[/bold #ffffff] {user_text}"))
 
+        # Check for commands
         is_goal = False
+        is_plan = False
+        
         if user_text.startswith("/goal "):
             is_goal = True
             prompt = user_text[6:].strip()
             self.chat_log.write(Text.from_markup(f"\n[bold #ffffff][GOAL RUNNING]:[/bold #ffffff] {prompt}"))
+        elif user_text.startswith("/plan "):
+            is_plan = True
+            prompt = user_text[6:].strip()
+            self.chat_log.write(Text.from_markup(f"\n[bold #ffffff][PLANNING MODE RUNNING]:[/bold #ffffff] {prompt}"))
+        elif user_text.startswith("/model"):
+            # Model selection
+            self.chat_log.write(Text.from_markup("\n[bold #ffffff][AVAILABLE MODELS]:[/bold #ffffff]"))
+            for provider, info in MODELS_2026.items():
+                for m in info["models"].keys():
+                    self.chat_log.write(Text.from_markup(f"  - {m} (click to set in settings or type /model <name>)"))
+            return
         else:
             prompt = user_text
 
-        self.run_worker(self.execute_agent_loop(prompt, is_goal))
+        # Set temporary plan-only flag
+        self.is_plan_only = is_plan
+        self.run_worker(self.execute_agent_loop(prompt, is_goal or is_plan))
 
     async def execute_agent_loop(self, prompt: str, is_goal: bool) -> None:
         try:
             self.update_status("Thinking...")
+            # If in planning mode, prefix prompt
+            if self.is_plan_only:
+                prompt = f"PLAN ONLY: Create a complete implementation plan for this goal. Do not run any code write operations: {prompt}"
             response = await self.agent.step(prompt, is_goal=is_goal)
             self.chat_log.write(Text.from_markup(f"\n[bold #ffffff]🤖 Athen Agent:[/bold #ffffff]\n{response}"))
-            self.update_sidebar_content()
+            self.update_all_views()
         except Exception as e:
             self.chat_log.write(Text.from_markup(f"\n[bold #ffffff][SYSTEM ERROR]:[/bold #ffffff] {str(e)}"))
         finally:
             self.update_status("Ready.")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "save-settings-btn":
+            # Save inputs to local .env
+            env_path = Path.cwd() / ".env"
+            openrouter = self.query_one("#set-openrouter", Input).value
+            anthropic = self.query_one("#set-anthropic", Input).value
+            openai = self.query_one("#set-openai", Input).value
+            gemini = self.query_one("#set-gemini", Input).value
+            deepseek = self.query_one("#set-deepseek", Input).value
+            
+            lines = [
+                f"OPENROUTER_API_KEY={openrouter}\n",
+                f"ANTHROPIC_API_KEY={anthropic}\n",
+                f"OPENAI_API_KEY={openai}\n",
+                f"GEMINI_API_KEY={gemini}\n",
+                f"DEEPSEEK_API_KEY={deepseek}\n"
+            ]
+            env_path.write_text("".join(lines))
+            
+            # Reload agent client keys
+            os.environ["OPENROUTER_API_KEY"] = openrouter
+            os.environ["ANTHROPIC_API_KEY"] = anthropic
+            os.environ["OPENAI_API_KEY"] = openai
+            os.environ["GEMINI_API_KEY"] = gemini
+            os.environ["DEEPSEEK_API_KEY"] = deepseek
+            
+            self.agent.llm_client.api_key = openrouter if self.agent.llm_client.provider == "openrouter" else anthropic
+            
+            self.update_status("API Keys Saved successfully.")
+            self.chat_log.write(Text.from_markup("\n[bold #ffffff]System status:[/bold #ffffff] API keys saved to .env and loaded successfully."))
 
     def action_clear_chat(self) -> None:
         self.chat_log.clear()
@@ -278,5 +486,5 @@ class AthenTUI(App):
         self.update_status("Linting LLM Wiki database...")
         res = await self.agent.wiki.lint()
         self.chat_log.write(Text.from_markup(f"\n[bold #ffffff]System memory linter:[/bold #ffffff]\n{res}"))
-        self.update_sidebar_content()
+        self.update_all_views()
         self.update_status("Ready.")

@@ -160,4 +160,20 @@ class LLMWiki:
             return f"Wiki Lint Completed:\n{data.get('summary', 'No changes proposed.')}"
         except Exception as e:
             return f"Wiki lint failed: {str(e)}"
+
+    def get_links(self) -> Dict[str, Any]:
+        """Return relationship links between wiki files based on link mentions."""
+        pages = self.get_all_pages()
+        nodes = [p.stem for p in pages]
+        links = []
+        for p in pages:
+            content = p.read_text(encoding="utf-8", errors="replace")
+            # Find [[Topic]] links
+            matches = re.findall(r'\[\[(.*?)\]\]', content)
+            for m in matches:
+                target = m.split('|')[0].strip()
+                if target in nodes:
+                    links.append({"source": p.stem, "target": target})
+        return {"nodes": nodes, "links": links}
+
 import json
